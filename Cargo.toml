@@ -1,0 +1,22 @@
+[package]
+name = "tri_space_ambient"
+version = "3.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+atomic_float = "0.1"
+cpal = "0.15"
+crossbeam-channel = "0.5"
+eframe = "0.28"
+egui = "0.28"
+hound = "3.5"
+rand = "0.8"
+rand_pcg = "0.3"
+rustfft = "6.2"
+rfd = "0.14"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
