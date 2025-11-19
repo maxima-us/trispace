@@ -443,7 +443,7 @@ impl AudioGraph {
             
             // Generate uniform noise triangular dither
 			// Changing dither multiplier to 0.00001 to lower it to approx -90dB 
-            let d = ((self.dither_state ^ 0x9E3779B9) as f32 * (1.0 / 4294967296.0) - 0.5) * 0.00001;
+            let d = ((self.dither_state ^ 0x9E3779B9) as f32 * (1.0 / 4294967296.0) - 0.5) * 0.00003;
             
             self.buffers.post_l[n] += d;
             self.buffers.post_r[n] -= d;
