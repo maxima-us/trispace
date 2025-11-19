@@ -71,6 +71,7 @@ impl BandpassSvf {
         v1 // Bandpass output
     }
     
+    #[allow(dead_code)]
     fn reset(&mut self) {
         self.ic1eq = 0.0;
         self.ic2eq = 0.0;
@@ -210,7 +211,10 @@ impl SpectralDelay {
         let mut band_out_r = [0.0f32; BLOCK];
         
         // Power-normalized gain (maintains RMS when summing)
-        let gain = 1.0 / (NUM_BANDS as f32).sqrt();
+        // Previously 1.0/sqrt(8) ~= 0.35, which resulted in significant volume drop
+        // because band outputs are partially correlated at crossover points.
+        // 0.60 is a safer heuristic for 8 overlapped bands to maintain perceived loudness.
+        let gain = 0.60;
         
         for band in &mut self.bands {
             // Split input into this frequency band
@@ -255,21 +259,6 @@ impl SpectralDelay {
             self.bands[band_idx].set_damping_hz(fc);
         }
     }
-    
-    // /// Set all band times proportionally (scale = 1.0 is default)
-    // pub fn set_global_time_scale(&mut self, scale: f32) {
-    //     let base_times = [150.0, 200.0, 250.0, 300.0, 350.0, 400.0, 450.0, 500.0];
-    //     for (i, &base_ms) in base_times.iter().enumerate() {
-    //         self.bands[i].set_time_ms(base_ms * scale);
-    //     }
-    // }
-    
-    // /// Set all band feedbacks to same value
-    // pub fn set_global_feedback(&mut self, fb: f32) {
-    //     for band in &mut self.bands {
-    //         band.set_feedback(fb);
-    //     }
-    // }
 
     /// Set all band times from external array (called from routing with macro-shaped values)
     pub fn set_all_band_times(&mut self, times_ms: &[f32; 8]) {
@@ -300,7 +289,6 @@ impl SpectralDelay {
         }
     }
 
-    
     // === Getters for UI ===
     
     pub fn get_band_count() -> usize {
@@ -315,41 +303,3 @@ impl SpectralDelay {
         }
     }
 }
-
-
-
-
-// #Unified Filterbank Architecture
-
-// ##Shared Foundation: dsp/filterbank.rs
-
-// Create a filter primitives module with two distinct types:
-
-// 1. CrossoverNetwork
-// Purpose: Phase-coherent band splitting (Linkwitz-Riley cascaded biquads)
-// Users: Spectral delay (8-way split)
-// Characteristic: Full spectrum decomposition → independent bands → sum back to original
-
-// 2. ShelfPair
-// Purpose: Matched low/high TPT shelves around pivot frequency
-// Users: FDN per-line RT60 control (2 shelves = 3-band response)
-// Characteristic: Continuous frequency shaping (not discrete bands)
-
-// ##Design Rationale
-
-// -Don't force full sharing because:
-
-// --Spectral delay needs one filterbank splitting stereo input → 8 mono bands
-// --FDN needs twelve shelf pairs (one per delay line) operating in feedback loops
-// --Crossovers = expensive (steep slopes, linear phase) but only 1 needed
-// --Shelves = cheap (1st order) but need 24 instances
-// --They solve different problems:
-// ---Spectral: "process different frequencies with different delays"
-// ---FDN: "make feedback frequency-dependent for RT60(f)"
-
-
-// -Do share:
-
-// --TPT/ZDF coefficient calculation (in filterbank.rs)
-// --Linkwitz-Riley design formulas
-// --Power-normalization utilities

@@ -87,9 +87,14 @@ impl RmsDetector {
         }
     }
     
+    /// Converts milliseconds to 1-pole coefficient using T60 standard.
+    /// Previous implementation used tau=time, which is correct for 'tau' 
+    /// but misleading for UI labels (result was ~7x slower than expected).
+    /// T60 (decay to -60dB) implies coeff = exp(-ln(1000) / samples).
     fn time_to_coeff(time_ms: f32) -> f32 {
         let time_samps = time_ms * 0.001 * SR as f32;
-        (-1.0 / time_samps.max(1.0)).exp()
+        // -ln(1000) ≈ -6.907755
+        (-6.907755 / time_samps.max(1.0)).exp()
     }
     
     fn set_attack(&mut self, attack_ms: f32) {
@@ -125,9 +130,9 @@ impl EnvelopeFollower {
         Self {
             crossover: SimpleCrossover3::new(),
             rms_states: [
-                RmsDetector::new(10.0, 100.0),  // Low: slower
-                RmsDetector::new(5.0, 50.0),    // Mid: medium
-                RmsDetector::new(2.0, 25.0),    // High: faster
+                RmsDetector::new(10.0, 100.0),  // Low
+                RmsDetector::new(5.0, 50.0),    // Mid
+                RmsDetector::new(2.0, 25.0),    // High
             ],
             envelopes: [0.0; NUM_BANDS],
             combined: 0.0,
@@ -153,6 +158,7 @@ impl EnvelopeFollower {
         self.combined
     }
     
+    #[allow(dead_code)]
     pub fn get_bands(&self) -> [f32; NUM_BANDS] {
         self.envelopes
     }

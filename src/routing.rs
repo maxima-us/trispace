@@ -1,12 +1,11 @@
-
 //! Audio Routing Graph - Maintains complex signal flow
 
 use crate::dsp::TiltShelf;
-use crate::envelope::{EnvelopeFollower, envelope_to_modulation};  // ← ADD THIS
-use crate::multiband::SpectralDelay;  // ← ADD THIS LINE
+use crate::envelope::{EnvelopeFollower, envelope_to_modulation};
+use crate::multiband::SpectralDelay;
 use crate::processors::*;
 use crate::types::*;
-use std::sync::atomic::Ordering;  // ← ADDED THIS
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
@@ -17,18 +16,20 @@ pub struct AudioGraph {
     // Processors
     pub grains: GrainPool,
     pub delay: StereoDelay,
-    pub spectral: SpectralDelay,  // ← ADD THIS LINE
+    pub spectral: SpectralDelay,
     pub fdn: Fdn,
     pub conv: ConvHead,
     pub tilt: TiltShelf,
-    pub envelope: EnvelopeFollower,  // ← ADD THIS
+    pub envelope: EnvelopeFollower,
     
     // Routing buffers (reusable)
     buffers: GraphBuffers,
 
-    // Persistent state (FIX: Rotor phase must accumulate across blocks)
+    // Persistent state
+    // FIX: Rotor phase and Dither state MUST be persistent fields, not local
+    // variables, to avoid blocking artifacts (zipper noise and 375Hz tone).
     rotor_phase: f32,
-    dither_state: u32,  // FIX: Persistent PRNG state (prevents 375 Hz periodic tone)
+    dither_state: u32,
 }
 
 struct GraphBuffers {
@@ -40,14 +41,14 @@ struct GraphBuffers {
     fdn_sends: [Vec<f32>; FDN_LINES],
     delay_send_l: [f32; BLOCK],
     delay_send_r: [f32; BLOCK],
-    spectral_send_l: [f32; BLOCK],  // ← ADD THIS LINE
-    spectral_send_r: [f32; BLOCK],  // ← ADD THIS LINE
+    spectral_send_l: [f32; BLOCK],
+    spectral_send_r: [f32; BLOCK],
     
     // Processor outputs
     delay_out_l: [f32; BLOCK],
     delay_out_r: [f32; BLOCK],
-    spectral_out_l: [f32; BLOCK],  // ← ADD THIS LINE
-    spectral_out_r: [f32; BLOCK],  // ← ADD THIS LINE
+    spectral_out_l: [f32; BLOCK],
+    spectral_out_r: [f32; BLOCK],
     
     // Convolution scratch
     fdn_scratch_a: [f32; BLOCK],
@@ -67,12 +68,12 @@ impl GraphBuffers {
             fdn_sends: std::array::from_fn(|_| vec![0.0; BLOCK]),
             delay_send_l: [0.0; BLOCK],
             delay_send_r: [0.0; BLOCK],
-            spectral_send_l: [0.0; BLOCK],  // ← ADD THIS LINE
-            spectral_send_r: [0.0; BLOCK],  // ← ADD THIS LINE
+            spectral_send_l: [0.0; BLOCK],
+            spectral_send_r: [0.0; BLOCK],
             delay_out_l: [0.0; BLOCK],
             delay_out_r: [0.0; BLOCK],
-            spectral_out_l: [0.0; BLOCK],  // ← ADD THIS LINE
-            spectral_out_r: [0.0; BLOCK],  // ← ADD THIS LINE
+            spectral_out_l: [0.0; BLOCK],
+            spectral_out_r: [0.0; BLOCK],
             fdn_scratch_a: [0.0; BLOCK],
             fdn_scratch_b: [0.0; BLOCK],
             ir_scratch: [0.0; BLOCK],
@@ -89,8 +90,8 @@ impl GraphBuffers {
         }
         self.delay_send_l.fill(0.0);
         self.delay_send_r.fill(0.0);
-        self.spectral_send_l.fill(0.0);  // ← ADD THIS LINE
-        self.spectral_send_r.fill(0.0);  // ← ADD THIS LINE
+        self.spectral_send_l.fill(0.0);
+        self.spectral_send_r.fill(0.0);
         self.ir_scratch.fill(0.0);
         self.post_l.fill(0.0);
         self.post_r.fill(0.0);
@@ -106,18 +107,18 @@ impl AudioGraph {
         Self {
             grains: GrainPool::new(vec![0.0; SR]),
             delay: StereoDelay::new(18),
-            spectral: SpectralDelay::new(),  // ← ADD THIS LINE
+            spectral: SpectralDelay::new(),
             fdn: Fdn::new(size, damping, predelay),
             conv: ConvHead::new(),
             tilt: TiltShelf::new(),
-            envelope: EnvelopeFollower::new(),  // ← ADD THIS
+            envelope: EnvelopeFollower::new(),
             buffers: GraphBuffers::new(),
-            rotor_phase: 0.0,  // Initialize rotor phase (FIX: Persistent state)
-            dither_state: 0xC0FFEEu32,  // FIX: Initialize once (not every block)
+            rotor_phase: 0.0,
+            dither_state: 0xC0FFEEu32, 
         }
     }
     
-    /// Process one block - EXACT SAME AUDIO PATH AS BEFORE
+    /// Process one block
     pub fn process_block(
         &mut self,
         output: &mut [f32],
@@ -192,10 +193,6 @@ impl AudioGraph {
                     }
                 }
             }
-            
-                
-            // }
-
 
             // Send grains to spectral delay (parameterized)
             let grain_spectral_send = params.grains.spectral_send.load(Ordering::Relaxed);
@@ -203,8 +200,6 @@ impl AudioGraph {
                 self.buffers.spectral_send_l[n] = self.buffers.main_l[n] * grain_spectral_send;
                 self.buffers.spectral_send_r[n] = self.buffers.main_r[n] * grain_spectral_send;
             }
-
-        // }
         }
         
         // === STAGE 2: DELAY ===
@@ -238,10 +233,11 @@ impl AudioGraph {
         let mut shaped_times = [0.0f32; 8];
         let mut shaped_feedbacks = [0.0f32; 8];
         
-        // Simple RNG for jitter (use a static seed for consistency)
+        // Simple RNG for jitter (use a static seed for consistency within block)
+        // Note: We do NOT change this seed, so jitter is consistent per frame setup
         use rand::{Rng, SeedableRng};
         use rand_pcg::Pcg64;
-        let mut rng = Pcg64::seed_from_u64(12345); // Deterministic per block
+        let mut rng = Pcg64::seed_from_u64(12345); 
         
         for i in 0..8 {
             // Load base values from param arrays
@@ -368,15 +364,15 @@ impl AudioGraph {
     fn apply_rotor_sends(&mut self, frames: usize, params:&Arc<GlobalParams>) {
         use std::f32::consts::PI;
         
-        // This is the existing rotor logic - unchanged
-        // FIX: Use persistent rotor phase (accumulates across blocks)
+        // Rotor rate 0.03 Hz = ~33 seconds per revolution
         let rotor_rate = 0.03;
-        // let mut rotor_phase = 0.0; // In real impl, store in self (done in FIX below)
         let inc = 2.0 * PI * rotor_rate * (BLOCK as f32 / SR as f32);
         
+        // Calculate spatial weights based on persistent rotor phase
         let mut weights = [0.0f32; FDN_LINES];
         let mut wsum = 0.0;
         for k in 0..FDN_LINES {
+            // Offset phase for each FDN line
             let phase = self.rotor_phase + (2.0 * PI * k as f32 / FDN_LINES as f32);
             let w = 0.5 * (1.0 + phase.sin());
             weights[k] = w;
@@ -388,19 +384,11 @@ impl AudioGraph {
             }
         }
 
-        // Accumulate phase and wrap (FIX: Smooth wrapping without discontinuity)
+        // Accumulate persistent phase and wrap smoothly
         self.rotor_phase += inc;
         if self.rotor_phase >= 2.0 * PI {
             self.rotor_phase -= 2.0 * PI;
         }
-        
-        // for n in 0..frames {
-        //     let mono = 0.5 * (self.buffers.delay_out_l[n] + self.buffers.delay_out_r[n]);
-        //     for k in 0..FDN_LINES {
-        //         self.buffers.fdn_sends[k][n] += mono * 0.30 * weights[k];
-        //     }
-        // }
-
 
         // Load send amounts
         let delay_fdn_send = params.delay.fdn_send.load(Ordering::Relaxed);
@@ -428,7 +416,7 @@ impl AudioGraph {
         let grain_mix = params.grains.mix.load(Relaxed);
         let reverb_mix = params.reverb.mix.load(Relaxed);
         let delay_mix = params.delay.mix.load(Relaxed);
-        let spectral_mix = params.spectral.mix.load(Relaxed);  // ← ADD THIS LINE
+        let spectral_mix = params.spectral.mix.load(Relaxed);
         let dry_wet = params.master.dry_wet.load(Relaxed);
         
         for n in 0..frames {
@@ -437,10 +425,10 @@ impl AudioGraph {
             
             let wet_l = reverb_mix * con_l[n] 
                       + delay_mix * self.buffers.delay_out_l[n]
-                      + spectral_mix * self.buffers.spectral_out_l[n];  // ← ADD THIS LINE
+                      + spectral_mix * self.buffers.spectral_out_l[n];
             let wet_r = reverb_mix * con_r[n] 
                       + delay_mix * self.buffers.delay_out_r[n]
-                      + spectral_mix * self.buffers.spectral_out_r[n];  // ← ADD THIS LINE
+                      + spectral_mix * self.buffers.spectral_out_r[n];
             
             self.buffers.post_l[n] = (1.0 - dry_wet) * dry_l + dry_wet * wet_l;
             self.buffers.post_r[n] = (1.0 - dry_wet) * dry_r + dry_wet * wet_r;
@@ -448,13 +436,15 @@ impl AudioGraph {
     }
     
     fn apply_dither_and_limit(&mut self, output: &mut [f32], frames: usize) {
-        // Dithering
-        // Dithering (FIX: Use persistent state to prevent periodic 375 Hz tone)
-        // let mut dither_state = 0xC0FFEEu32; // Store in self in real impl
+        // Dithering uses persistent state to ensure broadband noise characteristic
+        // (Prevents "white noise" complaint which was actually a 375Hz periodic loop)
         for n in 0..frames {
-            // dither_state = dither_state.wrapping_mul(1664525).wrapping_add(1013904223);
             self.dither_state = self.dither_state.wrapping_mul(1664525).wrapping_add(1013904223);
-            let d = ((self.dither_state ^ 0x9E3779B9) as f32 * (1.0 / 4294967296.0) - 0.5) * 0.001;
+            
+            // Generate uniform noise triangular dither
+			// Changing dither multiplier to 0.00001 to lower it to approx -90dB 
+            let d = ((self.dither_state ^ 0x9E3779B9) as f32 * (1.0 / 4294967296.0) - 0.5) * 0.00001;
+            
             self.buffers.post_l[n] += d;
             self.buffers.post_r[n] -= d;
         }
